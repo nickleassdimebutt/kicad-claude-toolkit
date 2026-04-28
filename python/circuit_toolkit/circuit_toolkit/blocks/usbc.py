@@ -29,8 +29,11 @@ HRO_TYPE_C_31_M_12_PIN_MAP = {
     "VBUS_B9": "B9",
     "GND_B12": "B12",
 
-    # Shield PTH pins (all four share pad number "SH" in this footprint)
-    "SHIELD": "SH",
+    # Shield PTH pins — pad numbering differs across KiCad library versions:
+    # KiCad 10 numbers all four shield holes "SH", KiCad 9 uses "S1". The
+    # pipe alias makes the toolkit accept either; whichever exists on the
+    # loaded footprint wins.
+    "SHIELD": "SH|S1",
 }
 
 
@@ -67,8 +70,10 @@ def usbc_power(board: Board, ref: str = "J1",
             vbus.add(ref, pad)
         for pad in ("A1", "A12", "B1", "B12"):
             gnd.add(ref, pad)
-        # Shield pins to GND — all 4 shield pads share pad number "SH" in this footprint
-        gnd.add(ref, "SH")
+        # Shield pins to GND — KiCad 10 names them "SH", KiCad 9 names them
+        # "S1"; the pipe alias is resolved by build_pcb against whichever
+        # pads the loaded footprint actually exposes.
+        gnd.add(ref, "SH|S1")
         # Data lines & SBU pins → GND for power-only mode (D+/D−/SBU not used)
         for pad in ("A6", "A7", "A8", "B6", "B7", "B8"):
             gnd.add(ref, pad)

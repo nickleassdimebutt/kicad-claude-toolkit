@@ -268,17 +268,28 @@ def build_pcb(board: Board,
             fp = fp_by_ref.get(pad_ref.component_ref)
             if fp is None or not pad_ref.pad_number:
                 continue
-            # Iterate pads — a footprint may have multiple pads with the same number
-            # (e.g. SOT-223 tab has two pads numbered "2", USB-C shield has four "SH").
-            # Set net on all matches.
+            # A footprint may have multiple pads sharing one number (e.g. the
+            # SOT-223 tab is also pad 2; the USB-C shield uses 4 thru-holes
+            # all named "SH" in KiCad 10 but "S1" in KiCad 9). Pad numbers
+            # may also be specified as a pipe-separated alias list to bridge
+            # cross-version library naming — the first alternate that
+            # matches *any* pad on the footprint wins, and every pad with
+            # that number gets the net.
+            alternates = pad_ref.pad_number.split("|") if "|" in pad_ref.pad_number \
+                else [pad_ref.pad_number]
             assigned = False
-            for p in fp.Pads():
-                if p.GetNumber() == pad_ref.pad_number:
-                    p.SetNet(netinfo)
-                    assigned = True
+            for alt in alternates:
+                for p in fp.Pads():
+                    if p.GetNumber() == alt:
+                        p.SetNet(netinfo)
+                        assigned = True
+                if assigned:
+                    break  # don't fall through to next alias once one resolves
             if not assigned:
+                available = sorted({str(p.GetNumber()) for p in fp.Pads()})
                 raise RuntimeError(
-                    f"Could not find pad {pad_ref.pad_number!r} on {pad_ref.component_ref}"
+                    f"Could not find pad {pad_ref.pad_number!r} on "
+                    f"{pad_ref.component_ref}; available pads: {available}"
                 )
 
     # ── Pad zone-connection overrides ─────────────────────────────────────
