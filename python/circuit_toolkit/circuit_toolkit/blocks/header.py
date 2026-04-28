@@ -55,3 +55,25 @@ def pin_header(board: Board, ref: str, pins: int,
             if net is not None:
                 board.connect(net, h, str(i))
         return h
+
+
+# JST PH-series 2-pin battery connector — extremely common for single-cell Li-ion.
+def jst_ph_battery(board: Board, ref: str = "J2",
+                   battery_pos: Optional["Net"] = None,
+                   gnd: Optional["Net"] = None) -> Component:
+    """JST PH 2.0 mm 2-pin vertical socket — pin 1 = +, pin 2 = GND."""
+    with block_scope(board, "battery_connector"):
+        if battery_pos is None: battery_pos = board.net("BAT")
+        if gnd is None:         gnd = board.net("GND")
+        c = Component(
+            ref=ref,
+            value="JST_PH_2P",
+            footprint="Connector_JST:JST_PH_B2B-PH-K_1x02_P2.00mm_Vertical",
+            lcsc="C145867", lcsc_basic=False,
+            pin_map={"1": "1", "2": "2"},
+            description="JST PH 2-pin vertical battery connector",
+        )
+        board.add(c)
+        board.connect(battery_pos, c, "1")
+        board.connect(gnd,         c, "2")
+        return c
