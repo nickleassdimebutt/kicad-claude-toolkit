@@ -10,8 +10,25 @@ import pcbnew
 from circuit_toolkit.core.board import Board
 
 
-# Default KiCad 10 footprint library location on Windows
-DEFAULT_FP_BASE = Path(r"C:\Program Files\KiCad\10.0\share\kicad\footprints")
+# Default KiCad footprint library location — checked in order, first hit wins.
+# Windows install paths first (most common dev environment), then Linux apt
+# defaults (CI runners, Ubuntu/Debian users). Override via the ``fp_base=``
+# kwarg to ``build_pcb()``.
+import os
+import sys
+
+_FP_CANDIDATES = [
+    os.environ.get("KICAD_FOOTPRINT_DIR"),
+    r"C:\Program Files\KiCad\10.0\share\kicad\footprints",
+    r"C:\Program Files\KiCad\9.0\share\kicad\footprints",
+    r"C:\Program Files\KiCad\8.0\share\kicad\footprints",
+    "/usr/share/kicad/footprints",
+    "/Applications/KiCad/KiCad.app/Contents/SharedSupport/footprints",
+]
+DEFAULT_FP_BASE = next(
+    (Path(p) for p in _FP_CANDIDATES if p and Path(p).is_dir()),
+    Path(_FP_CANDIDATES[1]),  # Windows v10 fallback if nothing exists yet
+)
 
 LAYER_MAP = {
     "F.Cu":      pcbnew.F_Cu,
@@ -49,12 +66,29 @@ def _ensure_net(board, name: str):
     return n
 
 
+def _find_kicad_io_plugin():
+    """Get the KiCad-S-expr IO plugin in a way that works across KiCad 8/9/10.
+
+    KiCad 10 renamed ``PluginFind`` → ``FindPlugin``; older versions (and at
+    least one Ubuntu PPA build of v9) still expose the old name. Try both."""
+    mgr = pcbnew.PCB_IO_MGR
+    fmt = pcbnew.PCB_IO_MGR.KICAD_SEXP
+    if hasattr(mgr, "FindPlugin"):
+        return mgr.FindPlugin(fmt)
+    if hasattr(mgr, "PluginFind"):
+        return mgr.PluginFind(fmt)
+    raise RuntimeError(
+        "Cannot find a KiCad IO plugin: pcbnew.PCB_IO_MGR has neither "
+        "FindPlugin (v10) nor PluginFind (v8/v9). Update KiCad."
+    )
+
+
 def _load_footprint(footprint_ref: str, fp_base: Path):
     """Load a KiCad footprint by 'Library:Name' reference."""
     if ":" not in footprint_ref:
         raise ValueError(f"Footprint ref must be 'Library:Name', got {footprint_ref!r}")
     lib, name = footprint_ref.split(":", 1)
-    io = pcbnew.PCB_IO_MGR.FindPlugin(pcbnew.PCB_IO_MGR.KICAD_SEXP)
+    io = _find_kicad_io_plugin()
     fp = io.FootprintLoad(str(fp_base / f"{lib}.pretty"), name)
     if fp is None:
         raise RuntimeError(f"Footprint not found: {footprint_ref}")
