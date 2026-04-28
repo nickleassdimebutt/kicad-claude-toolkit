@@ -211,10 +211,15 @@ def build_pcb(board: Board,
             # Reference text position is local to footprint; here we set absolute by offset
             # The override is interpreted as absolute board-frame position
             fp.Reference().SetPosition(_vec(rx, ry))
-        # Set LCSC field if present
+        # Set LCSC field if present (and hide so it doesn't clutter silkscreen)
         if comp.lcsc:
             try:
                 fp.SetField("LCSC", comp.lcsc)
+                # SetField adds as visible by default — hide
+                for field in fp.GetFields():
+                    if field.GetName() == "LCSC":
+                        field.SetVisible(False)
+                        break
             except Exception:
                 pass  # KiCad version difference; ignore silently
         pcb.Add(fp)
