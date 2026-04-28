@@ -46,6 +46,44 @@ DEFAULT_LOAD_MA = 100.0     # mA
 DEFAULT_TEMP_C = 27.0       # ngspice nominal
 
 
+# ── Bare operating-point helper (used by property-based tests) ────────────────
+
+def simulate_op(board: Board,
+                vbus: float = DEFAULT_VBUS,
+                load_ma: float = DEFAULT_LOAD_MA,
+                temperature_c: float = DEFAULT_TEMP_C,
+                out_net: str = DEFAULT_OUT_NET,
+                vbus_net: str = "VBUS",
+                overrides: Optional[Dict[str, object]] = None,
+                subckt_params: Optional[Dict[str, Dict[str, float]]] = None
+                ) -> Dict[str, float]:
+    """Run a single SPICE operating-point sim and return ``{node: voltage}``.
+
+    No plotting, no file I/O — the unit primitive that the property-test
+    framework calls hundreds of times across a parameter sweep.
+
+    Note: net names follow the sanitised SPICE form (lower-case, '+' kept).
+    Use the original board net names when looking up results — `NetMap`
+    handles the lookup transparently.
+    """
+    ctx = _new_context(board, ("dc", float(vbus)), load_ma,
+                       out_net=out_net, vbus_net=vbus_net,
+                       overrides=overrides, subckt_params=subckt_params)
+    sim = ctx.circuit.simulator(temperature=temperature_c,
+                                nominal_temperature=temperature_c)
+    op = sim.operating_point()
+    out: Dict[str, float] = {}
+    for node in op.nodes.values():
+        # node.name is the lower-cased SPICE node name
+        out[str(node.name)] = float(node[0])
+    # Provide a friendly alias so callers can ask for the original
+    # board-level net name regardless of SPICE's case mangling.
+    spice_out = ctx.out_node.lower()
+    if spice_out in out:
+        out[out_net] = out[spice_out]
+    return out
+
+
 # ── Internal: build a primed Circuit (board + sources + load) ─────────────────
 
 @dataclass

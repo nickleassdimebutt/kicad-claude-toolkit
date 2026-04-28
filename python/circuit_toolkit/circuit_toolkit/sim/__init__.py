@@ -11,6 +11,11 @@ from circuit_toolkit.sim.runner import (
     simulate_temperature_sweep,
     simulate_monte_carlo,
     simulate_all,
+    simulate_op,
+)
+from circuit_toolkit.sim.properties import (
+    check_property,
+    PropertyResult,
 )
 
 __all__ = [
@@ -21,4 +26,7 @@ __all__ = [
     "simulate_temperature_sweep",
     "simulate_monte_carlo",
     "simulate_all",
+    "simulate_op",
+    "check_property",
+    "PropertyResult",
 ]
