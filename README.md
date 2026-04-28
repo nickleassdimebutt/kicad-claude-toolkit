@@ -48,6 +48,10 @@ for ref in ("H1", "H2", "H3", "H4"):
 - `output/docs/schematic.svg` (via netlistsvg)
 - `output/fab/bom/bom_jlcpcb.csv` (with LCSC numbers)
 
+Optional modes (compose freely):
+- `python build.py --datasheet` — adds 3D PCB renders (`kicad-cli pcb render`) and a Linear-Tech-styled datasheet PDF (ReportLab, purple/gold, 7+ sections, optional SPICE plots embedded)
+- `python build.py --sim` — runs six SPICE pre-flight analyses (transient, load step, line/load reg, temperature sweep, Monte Carlo) via PySpice + ngspice; emits one PNG per analysis under `output/sim/`
+
 Run KiBot/kicad-cli for gerbers, drill, CPL.
 
 ### Install
@@ -59,9 +63,17 @@ Must install into KiCad's bundled Python (the only one with `pcbnew`):
   ".\python\circuit_toolkit"
 ```
 
+For the v2 datasheet / sim modes, add the optional extras:
+
+```powershell
+& "C:\Program Files\KiCad\10.0\bin\python.exe" -m pip install -e `
+  ".\python\circuit_toolkit[docs,sim]"
+```
+
 System tools:
 - KiCad 10.0.1 (Windows verified)
 - Node.js + `npm install -g netlistsvg`
+- (optional, for `--sim`) ngspice — `winget install ngspice` on Windows
 
 ## Reference design
 
@@ -80,7 +92,8 @@ kicad-claude-toolkit/
 │       └── circuit_toolkit/
 │           ├── core/             # Board, Component, Net
 │           ├── blocks/           # @subcircuit functions
-│           ├── builders/         # PCB, schematic, extract_layout
+│           ├── builders/         # PCB, schematic, extract_layout, render, datasheet
+│           ├── sim/              # PySpice pre-flight (transient, sweeps, Monte Carlo)
 │           └── fab/              # BOM
 ├── bridge/                       # KiCad IPC API bridge (older)
 ├── CLAUDE.md

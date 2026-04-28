@@ -1,0 +1,5 @@
+# Skill bundles are zip archives — never apply CRLF / line-ending normalisation.
+*.skill binary
+*.zip   binary
+*.png   binary
+*.pdf   binary

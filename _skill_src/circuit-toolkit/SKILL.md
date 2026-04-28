@@ -1,6 +1,6 @@
 ---
 name: circuit-toolkit
-description: "Python toolkit for headless circuit description and KiCad PCB generation. Use this skill when the user wants to design a new PCB from a text description, port an existing PCB to a scriptable workflow, or work with the circuit_toolkit Python package. Provides reusable @subcircuit blocks (USB-C power, LDO regulators, LEDs, headers, mounting holes), a Board/Component/Net data model, and builders that emit .kicad_pcb (via pcbnew), schematic.svg (via netlistsvg), and BOM.csv with LCSC numbers. Always consult this skill when writing circuit.py, layout.py, or build.py for a board project."
+description: "Python toolkit for headless circuit description, KiCad PCB generation, datasheet PDF authoring, and SPICE pre-flight. Use this skill when the user wants to design a new PCB from a text description, port an existing PCB to a scriptable workflow, generate a board datasheet, run pre-fabrication SPICE simulation, or work with the circuit_toolkit Python package. Provides reusable @subcircuit blocks (USB-C power, LDO regulators, LEDs, headers, mounting holes), a Board/Component/Net data model, builders that emit .kicad_pcb (via pcbnew), schematic.svg (via netlistsvg), 3D PCB renders (via kicad-cli), Linear-Tech-styled datasheet PDFs (via ReportLab), and a sim module that runs six standard analyses (transient, load step, line/load reg, temperature sweep, Monte Carlo) via PySpice + ngspice. Always consult this skill when writing circuit.py, layout.py, or build.py for a board project, or when adding documentation/simulation to one."
 ---
 
 # circuit_toolkit (verified on KiCad 10.0.1, Windows)
@@ -32,8 +32,13 @@ Must install into KiCad's bundled Python (the one that has `pcbnew`):
 ```
 
 Required system tools:
-- KiCad 10.0.1 (`kicad-cli` for DRC, `pcbnew` Python for build)
+- KiCad 10.0.1 (`kicad-cli` for DRC, `kicad-cli pcb render` for 3D PNG, `pcbnew` Python for build)
 - Node.js + `netlistsvg` for schematic SVG generation: `npm install -g netlistsvg`
+- (optional, for `--sim`) ngspice — `winget install ngspice` on Windows; the DLL must be discoverable by PySpice (env `NGSPICE_LIBRARY_PATH` or `C:\Spice64\bin_dll\ngspice.dll`)
+
+Optional Python extras (installed alongside the package):
+- `pip install -e ".[docs]"` → `reportlab`, `svglib`, `pillow` for `build_datasheet`
+- `pip install -e ".[sim]"`  → `PySpice`, `matplotlib` for the `simulate_*` analyses
 
 ## API — the typical `circuit.py`
 
@@ -125,21 +130,43 @@ outline = {"shape": "rect", "x": 0.0, "y": 0.0, "w": 48.0, "h": 30.0}
 ## The typical `build.py`
 
 ```python
-import circuit, layout
+import argparse, circuit, layout
 from circuit_toolkit.builders import build_pcb, build_schematic
 from circuit_toolkit.fab import write_bom
 
 def main():
+    p = argparse.ArgumentParser()
+    p.add_argument("--datasheet", action="store_true")
+    p.add_argument("--sim",       action="store_true")
+    args = p.parse_args()
+
     board = circuit.build()
-    build_pcb(board, positions=layout.positions,
-              output="my-board.kicad_pcb",
+    build_pcb(board, positions=layout.positions, output="my-board.kicad_pcb",
               tracks=layout.tracks, vias=layout.vias, zones=layout.zones,
               pad_zone_full=layout.pad_zone_full,
               ref_text_overrides=layout.ref_text_overrides,
               outline=layout.outline)
     build_schematic(board, "output/docs/schematic.svg")
     write_bom(board, "output/fab/bom")
+
+    if args.sim:
+        from circuit_toolkit.sim import simulate_all
+        simulate_all(board, "output/sim", monte_carlo_runs=100)
+
+    if args.datasheet:
+        from circuit_toolkit.builders import render_pcb, build_datasheet
+        render_pcb("my-board.kicad_pcb", "output/render", sides=("top","bottom"))
+        build_datasheet(board, "output/docs/datasheet.pdf",
+                        rev="0.1", description="One-line tagline",
+                        render_top="output/render/render_top.png",
+                        render_bottom="output/render/render_bottom.png",
+                        schematic_svg="output/docs/schematic.svg",
+                        bringup_md="bringup.md",
+                        sim_dir="output/sim" if args.sim else None)
 ```
+
+Mode composition: `python build.py --datasheet --sim` produces every artefact
+in one pass, with the SPICE plots embedded as section 7.0 of the PDF.
 
 ## The round-trip pattern (the key UX win)
 
@@ -161,9 +188,60 @@ This means **KiCad GUI is your placement editor**, but `layout.py` remains the s
 | `core/` | KiCad footprint vocabulary | Component/Net/Board classes — uses `Library:Footprint` strings |
 | `builders/pcb.py` | KiCad-specific (pcbnew) | Uses `pcbnew.LoadBoard()`, `PCB_TRACK`, `ZONE_FILLER` |
 | `builders/schematic.py` | netlistsvg-specific | Translates Board → Yosys-JSON → netlistsvg subprocess |
+| `builders/render.py` | KiCad-specific (kicad-cli) | Wraps `kicad-cli pcb render` for top/bottom 3D PNGs |
+| `builders/datasheet.py` | ReportLab-specific | LT-style PDF (purple/gold), 7+ sections, optional SPICE section |
+| `sim/` | PySpice + ngspice | Board → Circuit translation + 6 standard analyses + plot theme |
 | `fab/` | KiCad/JLCPCB-specific | KiBot integration, BOM CSV format |
 
 If you ever swap PCB CAD tools, `blocks/` is unchanged; you only rewrite `builders/`.
+
+## Datasheet PDF (`build_datasheet`)
+
+Linear-Technology-inspired styling: deep amethyst headers (#4B2C82), thin gold rules (#D4AF37), playful per-page footers, and section-numbered prose. `build_datasheet(board, output, ...)` composes:
+
+| § | Section | Source |
+|---|---------|--------|
+| Cover | board name + rev + 3D top render + tagline | `render_top` PNG path |
+| 1.0 | Specifications | auto-derived from circuit + `spec_overrides={...}` for manual fields |
+| 2.0 | Schematic | `schematic_svg` rasterised to PNG via svglib + renderPM |
+| 3.0 | PCB Layout | top + bottom 3D PNGs |
+| 4.0 | Pin Descriptions | extracted from connector blocks (pin_header, usbc_power) |
+| 5.0 | BOM | full table with LCSC numbers |
+| 6.0 | Bringup | converted from optional `bringup_md` |
+| 7.0 | Simulation | optional — embeds every PNG in `sim_dir` if provided |
+
+Pass `sim_dir=None` to omit section 7.0.
+
+## SPICE pre-flight (`circuit_toolkit.sim`)
+
+```python
+from circuit_toolkit.sim import (
+    simulate_transient, simulate_load_step,
+    simulate_line_regulation, simulate_load_regulation,
+    simulate_temperature_sweep, simulate_monte_carlo,
+    simulate_all,                        # convenience: runs all six
+)
+
+simulate_all(board, "output/sim", monte_carlo_runs=100)
+```
+
+| Analysis | What it shows | Default span |
+|----------|---------------|--------------|
+| `simulate_transient` | V_BUS ramp + V_OUT settle | 1 ms ramp, 10 ms total |
+| `simulate_load_step` | V_OUT droop + recovery on I_load step | 10 → 100 mA at 2 ms |
+| `simulate_line_regulation` | DC sweep V_BUS, dropout knee + flat region | 4.0 → 5.5 V |
+| `simulate_load_regulation` | DC sweep I_load, V_OUT droop | 0 → 800 mA |
+| `simulate_temperature_sweep` | V_OUT vs ambient T | -40 → +85 °C |
+| `simulate_monte_carlo` | V_OUT histogram with R/C/V_REF jitter | 100 runs, ±1 % R, ±10 % C, ±2 % V_REF |
+
+The board → SPICE translation in `sim/netlist.py` walks `board.components` and dispatches by ref-prefix:
+- `R*` → resistor (value parsed; `R`, `k`, `M`, `m`, `u` suffixes; scientific notation accepted)
+- `C*` → capacitor
+- `D*` → LED with calibrated wide-bandgap diode model (Vf set per `LED_PARAMS`)
+- `U*` → subcircuit instance — currently AMS1117 family; new LDOs go in `sim/models/`
+- `J*` and `H*` are skipped — no SPICE analogue
+
+The AMS1117 macromodel (`sim/models/ams1117.lib`) clamps `max(0, min(Vin - Vdrop, Vref))` with a small series R for load reg, a fixed Iq, and a linear V_REF temp coefficient. Subckt parameters (`vref`, `vdrop`, `r_load_reg`, `iq`, `tc`) are overridable per-instance via PySpice X kwargs — Monte Carlo uses this to jitter V_REF.
 
 ## Adding a new block
 
@@ -210,9 +288,12 @@ from circuit_toolkit.blocks.my_new_block import my_new_block
 
 ## Reference design
 
-`usbc-3v3` — USB-C → 3.3V 800mA LDO board.
+`usbc-3v3` — USB-C → 3.3V 800mA LDO board (lives in a separate repo).
 - `circuit.py` — 25 lines using all 5 standard blocks
 - `layout.py` — 95 lines (positions + 27 tracks + 4 vias + 1 GND zone)
 - DRC: 0 errors
 - BOM: 8 unique parts, all with LCSC numbers, all JLC basic where possible
-- See `designs/usbc-3v3/` (separate repo)
+- v2 outputs (run `python build.py --datasheet --sim`):
+  - `output/render/render_{top,bottom}.png` — kicad-cli 3D renders
+  - `output/sim/{transient,load_step,line_reg,load_reg,temp_sweep,monte_carlo}.png` — SPICE plots
+  - `output/docs/datasheet.pdf` — 13-page LT-style PDF, all artefacts embedded
