@@ -128,7 +128,18 @@ def _svg_to_png(svg_path: Path, png_path: Path, dpi: int = 300) -> None:
     (it supports CSS, gradients, and text correctly). svglib is an OK
     fallback but loses some styling — fine for a thumbnail in a datasheet.
     """
+    # PATH first, then common Windows install locations (system-wide MSI
+    # at Program Files, user-local portable extract under AppData/Local).
     inkscape = shutil.which("inkscape") or shutil.which("inkscape.com")
+    if not inkscape:
+        for cand in (
+            r"C:\Program Files\Inkscape\bin\inkscape.exe",
+            os.path.expandvars(r"%LOCALAPPDATA%\Inkscape\inkscape\bin\inkscape.exe"),
+            os.path.expandvars(r"%LOCALAPPDATA%\Programs\Inkscape\bin\inkscape.exe"),
+        ):
+            if cand and os.path.exists(cand):
+                inkscape = cand
+                break
     if inkscape:
         cmd = [inkscape, str(svg_path),
                f"--export-filename={png_path}",
