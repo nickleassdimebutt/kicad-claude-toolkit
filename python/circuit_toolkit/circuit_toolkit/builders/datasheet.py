@@ -384,8 +384,62 @@ def _section_specs(board: Board, manual_overrides: Optional[Dict[str, str]],
     return s
 
 
-def _section_schematic(schematic_svg: Optional[Path], styles: Dict) -> List:
+def _embed_svg(svg_path: Path, target_w: float, target_h: float):
+    """SVG → PNG → ReportLab Image. Reused by both flat and hierarchical paths."""
+    png_path = svg_path.with_suffix(".png")
+    from svglib.svglib import svg2rlg
+    from reportlab.graphics import renderPM
+    drawing = svg2rlg(str(svg_path))
+    renderPM.drawToFile(drawing, str(png_path), fmt="PNG", dpi=200, bg=0xFFFFFF)
+    return Image(str(png_path), width=target_w, height=target_h, kind="proportional")
+
+
+def _section_schematic(schematic_svg: Optional[Path],
+                       schematic_blocks: Optional[Dict[str, Path]],
+                       styles: Dict) -> List:
+    """Section 2.0. If `schematic_blocks` is provided (hierarchical mode),
+    emit one sheet per block; the dict's "overview" entry is the top-level
+    flat sheet. Otherwise fall back to the single `schematic_svg`."""
     s = [SectionTitle("2.0", "Schematic"), Spacer(1, 4)]
+
+    # Hierarchical mode: overview + one detail page per block
+    if schematic_blocks:
+        s.append(Paragraph(
+            "Functional schematic in IPC-style hierarchical form. The "
+            "overview shows every component and net on one sheet; each "
+            "subsequent page is the detail of one named subcircuit "
+            "(usbc_power, ldo, led, header, …) — useful for reviewers "
+            "who want to read the design top-down.",
+            styles["body"]))
+        s.append(Spacer(1, 6))
+        figure_n = 4
+        # Overview first
+        overview = schematic_blocks.get("overview")
+        if overview and overview.exists():
+            try:
+                s.append(_embed_svg(overview, 7.0 * inch, 8.0 * inch))
+                s.append(Paragraph(f"Figure {figure_n}. Overview — full flat schematic.",
+                                   styles["caption"]))
+                figure_n += 1
+            except Exception as e:
+                s.append(Paragraph(f"(Overview embed failed: {e})", styles["caption"]))
+        for block_id, p in schematic_blocks.items():
+            if block_id == "overview" or not p.exists():
+                continue
+            s.append(PageBreak())
+            s.append(SectionTitle(f"2.{figure_n - 4}",
+                                  f"Schematic detail — {block_id}"))
+            s.append(Spacer(1, 6))
+            try:
+                s.append(_embed_svg(p, 6.5 * inch, 8.0 * inch))
+                s.append(Paragraph(f"Figure {figure_n}. {block_id} subcircuit.",
+                                   styles["caption"]))
+                figure_n += 1
+            except Exception as e:
+                s.append(Paragraph(f"({block_id} embed failed: {e})", styles["caption"]))
+        return s
+
+    # Flat mode (back-compat)
     s.append(Paragraph(
         "Functional schematic auto-generated from the SKiDL netlist. "
         "Wires represent named electrical nets; symbol placement is "
@@ -394,19 +448,7 @@ def _section_schematic(schematic_svg: Optional[Path], styles: Dict) -> List:
     s.append(Spacer(1, 8))
     if schematic_svg and schematic_svg.exists():
         try:
-            # Rasterize SVG → PNG first (more reliable than embedding Drawing directly)
-            png_path = schematic_svg.with_suffix(".png")
-            from svglib.svglib import svg2rlg
-            from reportlab.graphics import renderPM
-            drawing = svg2rlg(str(schematic_svg))
-            # Render at high DPI so the embedded image is crisp
-            renderPM.drawToFile(drawing, str(png_path), fmt="PNG", dpi=200,
-                                bg=0xFFFFFF)
-            target_w = 7.0 * inch
-            target_h = 8.5 * inch
-            # Image() respects 'kind=proportional' to fit within bounds
-            s.append(Image(str(png_path), width=target_w, height=target_h,
-                           kind='proportional'))
+            s.append(_embed_svg(schematic_svg, 7.0 * inch, 8.5 * inch))
             s.append(Paragraph("Figure 4. Functional schematic.", styles["caption"]))
         except Exception as e:
             s.append(Paragraph(f"(Schematic embed failed: {e})", styles["caption"]))
@@ -625,6 +667,7 @@ def build_datasheet(board: Board, output: str | Path,
                     pcbdraw_front: Optional[Path] = None,
                     pcbdraw_back: Optional[Path] = None,
                     schematic_svg: Optional[Path] = None,
+                    schematic_blocks: Optional[Dict[str, Path]] = None,
                     bringup_md: Optional[Path] = None,
                     sim_dir: Optional[Path] = None,
                     spec_overrides: Optional[Dict[str, str]] = None) -> Path:
@@ -664,7 +707,7 @@ def build_datasheet(board: Board, output: str | Path,
     flowables.append(PageBreak())
     flowables += _section_specs(board, spec_overrides, styles)
     flowables.append(PageBreak())
-    flowables += _section_schematic(schematic_svg, styles)
+    flowables += _section_schematic(schematic_svg, schematic_blocks, styles)
     flowables.append(PageBreak())
     flowables += _section_pcb(render_top, render_bottom, board, styles)
     pcbdraw_section = _section_pcbdraw(pcbdraw_front, pcbdraw_back, styles)

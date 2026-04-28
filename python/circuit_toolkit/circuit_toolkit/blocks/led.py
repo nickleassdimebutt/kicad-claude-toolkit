@@ -4,6 +4,7 @@ from __future__ import annotations
 from circuit_toolkit.core.board import Board
 from circuit_toolkit.core.component import Component
 from circuit_toolkit.core.net import Net
+from circuit_toolkit.blocks.scope import block_scope
 
 
 # Approximate forward voltages by color for current calculation
@@ -65,41 +66,42 @@ def led_indicator(board: Board,
 
     Returns (led_component, resistor_component).
     """
-    if color not in LED_VF:
-        raise ValueError(f"Unknown LED color {color!r}")
+    with block_scope(board, "led"):
+        if color not in LED_VF:
+            raise ValueError(f"Unknown LED color {color!r}")
 
-    if resistor_value is None:
-        r_ohms = (supply_voltage - LED_VF[color]) / (current_ma / 1000.0)
-        resistor_value = _nearest_resistor(r_ohms)
+        if resistor_value is None:
+            r_ohms = (supply_voltage - LED_VF[color]) / (current_ma / 1000.0)
+            resistor_value = _nearest_resistor(r_ohms)
 
-    if led_anode_net_name is None:
-        led_anode_net_name = f"N_{ref_led}"
-    n_anode = board.net(led_anode_net_name)
+        if led_anode_net_name is None:
+            led_anode_net_name = f"N_{ref_led}"
+        n_anode = board.net(led_anode_net_name)
 
-    led_lcsc, led_basic = LED_LCSC[color]
-    led = Component(
-        ref=ref_led,
-        value=color.upper(),
-        footprint="LED_SMD:LED_0805_2012Metric",
-        lcsc=led_lcsc, lcsc_basic=led_basic,
-        pin_map={"K": "1", "A": "2", "1": "1", "2": "2"},
-        description=f"LED 0805 {color}",
-    )
-    board.add(led)
-    board.connect(gnd,     led, "K")
-    board.connect(n_anode, led, "A")
+        led_lcsc, led_basic = LED_LCSC[color]
+        led = Component(
+            ref=ref_led,
+            value=color.upper(),
+            footprint="LED_SMD:LED_0805_2012Metric",
+            lcsc=led_lcsc, lcsc_basic=led_basic,
+            pin_map={"K": "1", "A": "2", "1": "1", "2": "2"},
+            description=f"LED 0805 {color}",
+        )
+        board.add(led)
+        board.connect(gnd,     led, "K")
+        board.connect(n_anode, led, "A")
 
-    r = Component(
-        ref=ref_resistor,
-        value=resistor_value,
-        footprint="Resistor_SMD:R_0402_1005Metric",
-        lcsc="C21190" if resistor_value == "1k" else None,  # 1kΩ basic
-        lcsc_basic=(resistor_value == "1k"),
-        pin_map={"1": "1", "2": "2"},
-        description=f"Resistor {resistor_value} 0402",
-    )
-    board.add(r)
-    board.connect(vin,     r, "1")
-    board.connect(n_anode, r, "2")
+        r = Component(
+            ref=ref_resistor,
+            value=resistor_value,
+            footprint="Resistor_SMD:R_0402_1005Metric",
+            lcsc="C21190" if resistor_value == "1k" else None,  # 1kΩ basic
+            lcsc_basic=(resistor_value == "1k"),
+            pin_map={"1": "1", "2": "2"},
+            description=f"Resistor {resistor_value} 0402",
+        )
+        board.add(r)
+        board.connect(vin,     r, "1")
+        board.connect(n_anode, r, "2")
 
-    return led, r
+        return led, r

@@ -5,6 +5,7 @@ from typing import List, Optional
 from circuit_toolkit.core.board import Board
 from circuit_toolkit.core.component import Component
 from circuit_toolkit.core.net import Net
+from circuit_toolkit.blocks.scope import block_scope
 
 
 HEADER_FOOTPRINTS = {
@@ -32,24 +33,25 @@ def pin_header(board: Board, ref: str, pins: int,
 
     Returns the header Component.
     """
-    if len(nets) != pins:
-        raise ValueError(f"Expected {pins} nets, got {len(nets)}")
+    with block_scope(board, "header"):
+        if len(nets) != pins:
+            raise ValueError(f"Expected {pins} nets, got {len(nets)}")
 
-    fp = HEADER_FOOTPRINTS.get((rows, pins))
-    if fp is None:
-        raise ValueError(f"No footprint for {rows}×{pins} header")
+        fp = HEADER_FOOTPRINTS.get((rows, pins))
+        if fp is None:
+            raise ValueError(f"No footprint for {rows}×{pins} header")
 
-    h = Component(
-        ref=ref,
-        value=label or f"Header_{rows}x{pins}",
-        footprint=fp,
-        lcsc="C124378" if (rows, pins) == (1, 2) else None,
-        lcsc_basic=False,
-        pin_map={str(i): str(i) for i in range(1, pins * rows + 1)},
-        description=f"Pin header {rows}×{pins} 2.54mm",
-    )
-    board.add(h)
-    for i, net in enumerate(nets, start=1):
-        if net is not None:
-            board.connect(net, h, str(i))
-    return h
+        h = Component(
+            ref=ref,
+            value=label or f"Header_{rows}x{pins}",
+            footprint=fp,
+            lcsc="C124378" if (rows, pins) == (1, 2) else None,
+            lcsc_basic=False,
+            pin_map={str(i): str(i) for i in range(1, pins * rows + 1)},
+            description=f"Pin header {rows}×{pins} 2.54mm",
+        )
+        board.add(h)
+        for i, net in enumerate(nets, start=1):
+            if net is not None:
+                board.connect(net, h, str(i))
+        return h
