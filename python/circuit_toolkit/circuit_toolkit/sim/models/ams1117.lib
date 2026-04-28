@@ -1,0 +1,26 @@
+* AMS1117-3.3 simplified macromodel for circuit_toolkit SPICE pre-flight.
+*
+* Captures the behavior that matters for system-level verification:
+*   - Dropout: Vout = min(Vin - Vdrop, Vref); Vdrop ~ 1.1V at 800mA
+*   - Load regulation: ~0.4 %/A via small series output resistance
+*   - Quiescent current: ~5 mA from Vin to GND
+*   - Reference temperature coefficient: ~100 ppm/degC nominal
+*
+* This is NOT a full transistor-level vendor model. It is fast, robust under
+* ngspice, and gives the right answers for a 3.3V LDO sourcing < 1 A. Swap
+* in the AMS vendor PSpice model when sub-percent accuracy matters.
+*
+* Pins:  VIN  GND  VOUT
+.SUBCKT AMS1117_3V3 vin gnd vout
++ params: vref=3.3 vdrop=1.1 r_load_reg=0.025 iq=5m tc=100u
+* Reference (with linear temperature coefficient via TEMPER var)
+.func vref_t() {vref * (1 + tc * (TEMPER - 27))}
+* Behavioral source: max(0, min(Vin - Vdrop, Vref)) — clamps below zero so
+* startup-from-cold doesn't show non-physical negative output, clamps above
+* Vref so steady state regulates, and tracks Vin through the dropout knee.
+B_reg vout_int gnd V = max(0, min(V(vin) - vdrop, vref_t()))
+* Output series R captures load regulation droop
+R_out vout_int vout {r_load_reg}
+* Quiescent current draw from vin to gnd
+I_q vin gnd {iq}
+.ENDS AMS1117_3V3
