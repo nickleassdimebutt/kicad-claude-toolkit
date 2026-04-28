@@ -18,7 +18,11 @@ dependencies = [
 
 [project.optional-dependencies]
 sim = ["PySpice", "matplotlib"]                   # v2 SPICE simulation + plots
-docs = ["reportlab>=4.0", "svglib>=1.5", "pillow"]  # v2 datasheet PDF generation
+docs = [
+    "reportlab>=4.0", "svglib>=1.5", "pillow",    # v2 datasheet PDF generation
+    "pcbdraw>=1.2",                                # v3 stylized 2D PCB views
+    "LnkParse3",                                   # transitive dep (Windows .lnk parsing)
+]
 
 [tool.setuptools.packages.find]
 where = ["."]
