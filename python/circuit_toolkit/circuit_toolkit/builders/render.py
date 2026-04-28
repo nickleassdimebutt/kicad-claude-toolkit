@@ -1,15 +1,38 @@
 """PCB render — produces 3D PNG renders of the board via kicad-cli.
 
-KiCad 10 added headless `kicad-cli pcb render` which works on Windows directly.
+KiCad 10 added headless `kicad-cli pcb render`. Works on Windows out of
+the box and on Linux (apt + PPA) with kicad-cli on PATH.
 """
 from __future__ import annotations
 import os
+import shutil
 import subprocess
 from pathlib import Path
 from typing import List
 
 
-KICAD_CLI_DEFAULT = r"C:\Program Files\KiCad\10.0\bin\kicad-cli.exe"
+def _find_kicad_cli() -> str:
+    """Auto-detect kicad-cli. Order: KICAD_CLI env var, PATH, Windows install
+    paths (v10/v9/v8), Linux apt default, macOS bundle. Returns the path or
+    a Windows fallback so the error message names a familiar location."""
+    candidates = [
+        os.environ.get("KICAD_CLI"),
+        shutil.which("kicad-cli"),
+        shutil.which("kicad-cli.exe"),
+        r"C:\Program Files\KiCad\10.0\bin\kicad-cli.exe",
+        r"C:\Program Files\KiCad\9.0\bin\kicad-cli.exe",
+        r"C:\Program Files\KiCad\8.0\bin\kicad-cli.exe",
+        "/usr/bin/kicad-cli",
+        "/usr/local/bin/kicad-cli",
+        "/Applications/KiCad/KiCad.app/Contents/MacOS/kicad-cli",
+    ]
+    for c in candidates:
+        if c and os.path.exists(c):
+            return c
+    return candidates[3]  # Windows v10 fallback for the error message
+
+
+KICAD_CLI_DEFAULT = _find_kicad_cli()
 
 
 def render_pcb(pcb_path: str | Path,
