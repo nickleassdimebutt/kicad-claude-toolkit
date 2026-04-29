@@ -36,4 +36,7 @@ where = ["."]
 include = ["circuit_toolkit*"]
 
 [tool.setuptools.package-data]
-circuit_toolkit = ["py.typed"]
+circuit_toolkit = [
+    "py.typed",
+    "sim/models/*.lib",   # SPICE subckt models (AMS1117, future device libs)
+]
