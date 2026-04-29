@@ -17,7 +17,14 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-sim = ["PySpice", "matplotlib"]                   # v2 SPICE simulation + plots
+# v2 SPICE pre-flight — needs only matplotlib for plots and numpy for the
+# raw-file parser. The simulator itself is invoked via subprocess
+# (``ngspice -b``) so there is no Python binding pinned to a specific
+# ngspice version. Install ngspice separately:
+#   - apt: `sudo apt install ngspice`
+#   - Windows: extract ngspice-XX_64.7z, ensure ngspice_con.exe is on PATH or
+#     under %LOCALAPPDATA%\Spice64\bin\
+sim = ["matplotlib", "numpy"]
 docs = [
     "reportlab>=4.0", "svglib>=1.5", "pillow",    # v2 datasheet PDF generation
     "pcbdraw>=1.2",                                # v3 stylized 2D PCB views

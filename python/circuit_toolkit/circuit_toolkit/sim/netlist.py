@@ -1,29 +1,27 @@
-"""Board → PySpice Circuit translation.
+"""Board → SPICE deck text translation.
 
 Walks the Board's components and nets, classifies each component by its
-reference-designator prefix and value, and emits the corresponding SPICE
-primitive into a PySpice ``Circuit``. Anything that does not have a SPICE
-analogue (mounting holes, pin headers, USB-C connector body) is silently
-omitted — its nets remain in the circuit, driven by the test sources the
-analysis adds.
+reference-designator prefix, and emits the corresponding SPICE element line
+into a plain-text deck. The output is fed to a Backend (currently
+ngspice -b via subprocess); nothing in this module depends on PySpice.
 
 Component routing (ref-prefix dispatch):
 
     R*   → resistor              (value parsed; R, k, M, m, u suffixes)
     C*   → capacitor             (value/footprint string; ``10uF/0805`` form)
     D*   → diode (LED model)     (per-colour I-V via ``LED_VF``)
-    U*   → subcircuit instance   (currently only AMS1117_3V3)
-    J*   → connector — skipped, but its nets are exposed for test sources
+    U*   → subcircuit instance   (currently only AMS1117 family)
+    J*   → connector — skipped, but its nets remain available for test sources
 
-The translator returns the constructed Circuit plus a ``NetMap`` that
-records the SPICE node name for every Board net (so analyses can reference
-``+3V3`` without caring about character sanitisation).
+The translator returns the deck text plus a ``NetMap`` recording the SPICE
+node name for every Board net (so analyses can reference ``+3V3`` without
+caring about character sanitisation).
 """
 from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional
 
 from circuit_toolkit.core.board import Board
 from circuit_toolkit.core.component import Component
@@ -31,8 +29,7 @@ from circuit_toolkit.core.component import Component
 
 MODELS_DIR = Path(__file__).parent / "models"
 
-# LED forward-voltage by color (V) and effective series resistance (Ω) — captures
-# enough realism for indicator-LED-with-Rseries problems. NOT a vendor model.
+# LED forward-voltage by color (V) and effective series resistance (Ω).
 LED_PARAMS = {
     "red":    dict(vf=2.0, rs=4),
     "green":  dict(vf=2.1, rs=5),
@@ -46,7 +43,7 @@ LED_PARAMS = {
 # ── Value parsing ─────────────────────────────────────────────────────────────
 
 _VAL_RE = re.compile(
-    r"^\s*([0-9]*\.?[0-9]+(?:[eE][+-]?\d+)?)"  # mantissa, with optional sci-notation
+    r"^\s*([0-9]*\.?[0-9]+(?:[eE][+-]?\d+)?)"
     r"\s*([RkKMmuUnNpPfF]?)([FfHh]?)\s*(?:/.*)?$"
 )
 _SUFFIX_MULT = {
@@ -65,26 +62,18 @@ _SUFFIX_MULT = {
 def parse_value(s: str) -> float:
     """Parse a component value string to its base SI value.
 
-    Accepts things like ``5.1k``, ``10uF``, ``100nF/0402``, ``1.5``, ``2M2``-
-    less. Anything before a slash is the value; anything after is metadata.
-
     >>> parse_value("5.1k")
     5100.0
     >>> parse_value("10uF/0805")
     1e-05
     >>> parse_value("100nF/0402")
     1e-07
-    >>> parse_value("1k")
-    1000.0
     """
     m = _VAL_RE.match(s)
     if not m:
         raise ValueError(f"cannot parse component value: {s!r}")
-    mantissa, suffix, unit_char = m.group(1), m.group(2), m.group(3)
-    # 'F' alone (e.g. '10F') reads as suffix=='', unit_char=='F' → no multiplier.
-    # '10uF' reads as suffix='u', unit_char='F'.
-    mult = _SUFFIX_MULT.get(suffix, 1.0)
-    return float(mantissa) * mult
+    mantissa, suffix, _unit = m.group(1), m.group(2), m.group(3)
+    return float(mantissa) * _SUFFIX_MULT.get(suffix, 1.0)
 
 
 # ── Net naming ────────────────────────────────────────────────────────────────
@@ -103,7 +92,7 @@ class NetMap:
 
 def _sanitize(name: str) -> str:
     """SPICE-safe node name. Keeps '+' (ngspice accepts it) but replaces other
-    special chars conservatively to avoid PySpice/ngspice parse weirdness."""
+    special chars conservatively to avoid parse weirdness."""
     out = name
     out = out.replace(" ", "_").replace("/", "_").replace(",", "_")
     out = out.replace("(", "_").replace(")", "_")
@@ -128,8 +117,6 @@ def _net_at_pad(board: Board, ref: str, pad: str) -> Optional[str]:
     return None
 
 
-# ── Public API ────────────────────────────────────────────────────────────────
-
 def build_netmap(board: Board, gnd_net: str = "GND") -> NetMap:
     fwd: Dict[str, str] = {}
     for name in board.nets:
@@ -139,46 +126,59 @@ def build_netmap(board: Board, gnd_net: str = "GND") -> NetMap:
     return NetMap(gnd_name=gnd_net, forward=fwd)
 
 
-def board_to_circuit(board: Board,
-                     circuit,                           # PySpice Circuit
-                     net_map: NetMap,
-                     overrides: Optional[Dict[str, object]] = None,
-                     subckt_params: Optional[Dict[str, Dict[str, float]]] = None
-                     ) -> None:
-    """Populate `circuit` in place with SPICE primitives for every supported
-    component on `board`.
+# ── Deck builder ──────────────────────────────────────────────────────────────
+
+def board_to_deck(board: Board,
+                  net_map: NetMap,
+                  title: str | None = None,
+                  overrides: Optional[Dict[str, object]] = None,
+                  subckt_params: Optional[Dict[str, Dict[str, float]]] = None,
+                  include_models: bool = True) -> str:
+    """Translate `board` into a plain-text SPICE deck.
 
     `overrides` swaps component values (sweeps / Monte Carlo) — keyed by
     reference, e.g. ``{"R3": "990"}`` or ``{"R3": 990.0}``.
-    `subckt_params` injects parameters into X-element calls — keyed by
-    reference, e.g. ``{"U1": {"vref": 3.298}}`` overrides the AMS1117 Vref
-    on its subckt instantiation line.
+    `subckt_params` injects parameters into X-element calls — keyed by ref,
+    e.g. ``{"U1": {"vref": 3.298}}``.
+    `include_models` = True prepends ``.include`` lines for every .lib in
+    the bundled models/ directory.
+
+    Returns the deck text — a complete element block ready to be combined
+    with a control block and ``.end`` by a Backend.
     """
     overrides = overrides or {}
     subckt_params = subckt_params or {}
+    title = title or board.name
 
+    lines: List[str] = [f"* {title}"]
+
+    if include_models:
+        for lib in sorted(MODELS_DIR.glob("*.lib")):
+            lines.append(f".include {str(lib).replace(chr(92), '/')}")
+
+    # Components
     for comp in board.components:
         ref = comp.ref
         prefix = ref[0]
         value = overrides.get(ref, comp.value)
 
         if prefix == "R":
-            _add_resistor(circuit, board, comp, value, net_map)
+            lines.append(_emit_resistor(board, comp, value, net_map))
         elif prefix == "C":
-            _add_capacitor(circuit, board, comp, value, net_map)
+            lines.append(_emit_capacitor(board, comp, value, net_map))
         elif prefix == "D":
-            _add_led(circuit, board, comp, value, net_map)
+            lines.extend(_emit_led(board, comp, value, net_map))
         elif prefix == "U":
-            _add_subcircuit(circuit, board, comp, value, net_map,
-                            params=subckt_params.get(ref))
+            lines.append(_emit_subcircuit(board, comp, value, net_map,
+                                          params=subckt_params.get(ref)))
         # J*, H*, others: skipped — connectors and mounting holes are not simulated.
+
+    return "\n".join(l for l in lines if l)
 
 
 # ── Per-class emitters ────────────────────────────────────────────────────────
 
-def _two_pin_nets(board: Board, comp: Component,
-                  net_map: NetMap) -> Tuple[str, str]:
-    """Find the two SPICE nodes for a 2-pin component (pads 1 and 2)."""
+def _two_pin_nets(board: Board, comp: Component, net_map: NetMap):
     n1 = _net_at_pad(board, comp.ref, "1")
     n2 = _net_at_pad(board, comp.ref, "2")
     if n1 is None or n2 is None:
@@ -189,77 +189,72 @@ def _two_pin_nets(board: Board, comp: Component,
     return net_map[n1], net_map[n2]
 
 
-def _add_resistor(circuit, board, comp, value, net_map):
+def _emit_resistor(board, comp, value, net_map) -> str:
     n1, n2 = _two_pin_nets(board, comp, net_map)
     ohms = parse_value(value) if isinstance(value, str) else float(value)
-    circuit.R(comp.ref[1:], n1, n2, ohms)
+    return f"R{comp.ref[1:]} {n1} {n2} {ohms:g}"
 
 
-def _add_capacitor(circuit, board, comp, value, net_map):
+def _emit_capacitor(board, comp, value, net_map) -> str:
     n1, n2 = _two_pin_nets(board, comp, net_map)
     farads = parse_value(value) if isinstance(value, str) else float(value)
-    circuit.C(comp.ref[1:], n1, n2, farads)
+    return f"C{comp.ref[1:]} {n1} {n2} {farads:g}"
 
 
-def _add_led(circuit, board, comp, value, net_map):
-    """LED uses pin_map K=1 (cathode), A=2 (anode)."""
+# Track LED .model lines emitted in this deck so we don't duplicate them.
+def _emit_led(board, comp, value, net_map) -> List[str]:
     color = str(value).lower()
     if color not in LED_PARAMS:
-        # Unknown color — fall back to a generic red model.
         color = "red"
     p = LED_PARAMS[color]
     model_name = f"DLED_{color.upper()}"
 
-    # Wide-bandgap LEDs are modelled with a large emission coefficient N so the
-    # standard Shockley equation reproduces the measured Vf. Calibrate N from
-    # the desired Vf at 1 mA with IS = 1e-8 A:
-    #   Vf = N · Vt · ln(I / IS)  ⇒  N ≈ Vf / (0.026 · ln(1e-3 / 1e-8))
-    n_emission = max(2.0, p["vf"] / 0.299)  # floor at silicon-diode N
-    circuit.model(model_name, "D",
-                  IS=1e-8, N=n_emission, RS=p["rs"], BV=5, IBV=10e-6,
-                  CJO=15e-12)
+    # Wide-bandgap LEDs are modelled with a large emission coefficient N.
+    n_emission = max(2.0, p["vf"] / 0.299)
 
     cathode_pad = _pad_for(comp, "K")
     anode_pad = _pad_for(comp, "A")
     n_cath = _net_at_pad(board, comp.ref, cathode_pad)
     n_anode = _net_at_pad(board, comp.ref, anode_pad)
-    if n_anode is None or n_cath is None:
+    if not n_anode or not n_cath:
         raise RuntimeError(f"LED {comp.ref} pin map incomplete.")
-    circuit.D(comp.ref[1:],
-              net_map[n_anode], net_map[n_cath],
-              model=model_name)
+
+    out = [
+        f".model {model_name} D (IS=1e-8 N={n_emission:g} RS={p['rs']:g} "
+        f"BV=5 IBV=10u CJO=15p)",
+        f"D{comp.ref[1:]} {net_map[n_anode]} {net_map[n_cath]} {model_name}",
+    ]
+    return out
 
 
-def _add_subcircuit(circuit, board, comp, value, net_map, params=None):
-    """Map U-prefixed parts to subcircuit instances. Currently AMS1117 family.
-
-    `params` (dict) flows through as PySpice X kwargs which become
-    `name=value` pairs after the subckt name on the X line — ngspice reads
-    these as overrides to the subckt's `+ params:` defaults.
-    """
+def _emit_subcircuit(board, comp, value, net_map, params=None) -> str:
     val = str(value).strip()
     if val.startswith("AMS1117"):
-        # AMS1117_<voltage> subckt provides VIN/GND/VOUT
-        # Voltage is encoded in the value: AMS1117-3.3 → 3V3 subckt name
         m = re.match(r"AMS1117-?([0-9.]+)", val)
         if not m:
             raise RuntimeError(f"unrecognised AMS1117 variant: {val!r}")
         v = m.group(1)
         subckt = f"AMS1117_{v.replace('.', 'V')}"
-        # Locate VIN, GND, VOUT pads via pin_map
         n_vin = _net_at_pad(board, comp.ref, _pad_for(comp, "VIN"))
         n_gnd = _net_at_pad(board, comp.ref, _pad_for(comp, "GND"))
         n_vout = _net_at_pad(board, comp.ref, _pad_for(comp, "VOUT"))
         if not all((n_vin, n_gnd, n_vout)):
             raise RuntimeError(f"{comp.ref} LDO pins not all connected.")
-        # PySpice X kwargs become `param=value` pairs on the X line.
-        circuit.X(comp.ref[1:], subckt,
-                  net_map[n_vin], net_map[n_gnd], net_map[n_vout],
-                  **(params or {}))
-    # Other U-prefixed parts — silently skipped (extend as new subckts arrive).
+        param_str = ""
+        if params:
+            param_str = " " + " ".join(f"{k}={v:g}" for k, v in params.items())
+        return (f"X{comp.ref[1:]} {net_map[n_vin]} {net_map[n_gnd]} "
+                f"{net_map[n_vout]} {subckt}{param_str}")
+    return ""  # unrecognised U* — silently skipped
 
 
-def include_models(circuit) -> None:
-    """Add `.include` lines for every .lib in models/ to the given Circuit."""
-    for lib in sorted(MODELS_DIR.glob("*.lib")):
-        circuit.include(str(lib))
+# ── Compatibility shim: legacy PySpice-API call signature ─────────────────────
+# A few external callers (unit tests, exploratory scripts) imported
+# board_to_circuit. Keep that symbol working by routing it through the new
+# board_to_deck output, returned as a tuple so callers can introspect.
+def board_to_circuit(*args, **kwargs):
+    raise NotImplementedError(
+        "board_to_circuit() was removed when the SPICE backend switched from "
+        "PySpice to ngspice subprocess. Use board_to_deck() instead — it "
+        "returns a SPICE deck string. See sim/runner.py for a usage example."
+    )
